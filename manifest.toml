@@ -1,0 +1,7 @@
+name = "bd-tracker"
+version = "1.0.0"
+description = "Genie tracker plugin for bd/beads issue tracker"
+author = "Genie Team"
+license = "MIT"
+capabilities = ["tracker"]
+min_genie_version = "1.0.0"
