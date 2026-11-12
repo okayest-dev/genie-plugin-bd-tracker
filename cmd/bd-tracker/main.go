@@ -56,11 +56,12 @@ type Error struct {
 }
 
 type Capabilities struct {
-	Tools     bool `json:"tools"`
-	Providers bool `json:"providers"`
-	Tracker   bool `json:"tracker"`
-	Commands  bool `json:"commands"`
-	Version   int  `json:"version"`
+	Tools             bool   `json:"tools"`
+	Providers         bool   `json:"providers"`
+	Tracker           bool   `json:"tracker"`
+	TrackerIsolation  string `json:"tracker_isolation,omitempty"`
+	Commands          bool   `json:"commands"`
+	Version           int    `json:"version"`
 }
 
 type TrackerFrontierResult struct {
@@ -156,8 +157,9 @@ func printManifest() {
 
 func printCapabilities() {
 	caps := Capabilities{
-		Tracker: true,
-		Version: 1,
+		Tracker:         true,
+		TrackerIsolation: "shared",
+		Version:         1,
 	}
 	json.NewEncoder(os.Stdout).Encode(caps)
 }
@@ -178,7 +180,11 @@ func runPlugin() {
 
 		switch req.Method {
 		case MethodCapabilitiesList:
-			caps := Capabilities{Tracker: true, Version: 1}
+			caps := Capabilities{
+				Tracker:           true,
+				TrackerIsolation:  "shared",
+				Version:           1,
+			}
 			resp.Result, _ = json.Marshal(caps)
 
 		case MethodTrackerFrontier:
@@ -375,7 +381,7 @@ func closeTask(ctx context.Context, id string, reason string) error {
 
 func comment(ctx context.Context, id string, comment string) error {
 	binary := getBinary()
-	_, err := runBD(ctx, binary, "comment", id, "--message", comment)
+	_, err := runBD(ctx, binary, "comment", id, comment)
 	return err
 }
 
@@ -408,8 +414,8 @@ func create(ctx context.Context, args CreateArgs) (*TrackerTask, error) {
 	}
 
 	// Parse the output to get the created task ID
-	// bd create output format: "Created og-xxx"
-	re := regexp.MustCompile(`Created\s+(\S+)`)
+	// bd create output format: "✓ Created issue: og-a2v — Title" or "Created og-xxx"
+	re := regexp.MustCompile(`Created\s+(?:issue:\s+)?(\S+)`)
 	matches := re.FindStringSubmatch(output)
 	if matches == nil {
 		return nil, fmt.Errorf("could not parse created task ID from output: %s", output)
@@ -430,23 +436,41 @@ func parseFrontier(output string) (*TrackerTask, error) {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Status:") || strings.HasPrefix(line, "---") {
+		if line == "" || strings.HasPrefix(line, "Status:") || strings.HasPrefix(line, "---") || strings.HasPrefix(line, "Ready:") {
 			continue
 		}
-		re := regexp.MustCompile(`^[○◐●✓❄]\s+(\S+)\s+●\s+(\S+)\s+(\S+)\s+(.+)$`)
-		matches := re.FindStringSubmatch(line)
+		// Try format with type bracket first: ○ og-wm7 ● P1 [epic] Title
+		reWithType := regexp.MustCompile(`^[○◐●✓❄]\s+(\S+)\s+●\s+(P\d)\s+\[([^\]]+)\]\s+(.+)$`)
+		matches := reWithType.FindStringSubmatch(line)
 		if matches != nil {
 			id := matches[1]
-			status := parseStatus(matches[2])
-			priority := parsePriority(matches[3])
-			rest := matches[4]
-			taskType, title := extractTypeAndTitle(rest)
+			priority := matches[2]
+			taskType := matches[3]
+			title := matches[4]
 			return &TrackerTask{
 				ID:        id,
 				Title:     title,
 				Type:      taskType,
-				Status:    status,
-				Priority:  priority,
+				Status:    "open",
+				Priority:  parsePriority(priority),
+				CreatedAt: time.Now().Format(time.RFC3339),
+				UpdatedAt: time.Now().Format(time.RFC3339),
+			}, nil
+		}
+
+		// Try format without type bracket: ○ og-a2v ● P2 Test task from plugin
+		reWithoutType := regexp.MustCompile(`^[○◐●✓❄]\s+(\S+)\s+●\s+(P\d)\s+(.+)$`)
+		matches = reWithoutType.FindStringSubmatch(line)
+		if matches != nil {
+			id := matches[1]
+			priority := matches[2]
+			title := matches[3]
+			return &TrackerTask{
+				ID:        id,
+				Title:     title,
+				Type:      "task", // default when no type bracket
+				Status:    "open",
+				Priority:  parsePriority(priority),
 				CreatedAt: time.Now().Format(time.RFC3339),
 				UpdatedAt: time.Now().Format(time.RFC3339),
 			}, nil
@@ -470,61 +494,123 @@ func parseShow(id, output string) (*TrackerTask, error) {
 		if line == "" {
 			continue
 		}
+
+		// Parse the main task line - two formats:
+		// 1. ○ og-wm7 [EPIC] · Title [● P1 · OPEN]  (with type bracket)
+		// 2. ◐ og-fmh · Title [● P2 · IN_PROGRESS]  (without type bracket)
 		if strings.HasPrefix(line, "○ ") || strings.HasPrefix(line, "◐ ") || strings.HasPrefix(line, "● ") || strings.HasPrefix(line, "✓ ") || strings.HasPrefix(line, "❄ ") {
-			re := regexp.MustCompile(`^[○◐●✓❄]\s+(\S+)\s+(\[?\S+\]?)\s*[·:]\s*(.+)$`)
-			matches := re.FindStringSubmatch(line)
+			// Try format with type bracket first
+			reWithType := regexp.MustCompile(`^[○◐●✓❄]\s+(\S+)\s+\[([^\]]+)\]\s*·\s*(.+?)\s+\[●\s+(P\d)\s*·\s*(OPEN|IN_PROGRESS|CLOSED|WONTFIX|PARKED)\]$`)
+			matches := reWithType.FindStringSubmatch(line)
 			if matches != nil {
-				desc := matches[3]
-				taskType, title := extractTypeAndTitle(desc)
+				taskID := matches[1]
+				taskType := matches[2]
+				titleWithPriority := matches[3]
+				priority := matches[4]
+				status := parseStatusFromShow(matches[5])
+
+				// Extract title - remove trailing priority marker if present
+				title := titleWithPriority
+				if idx := strings.LastIndex(title, " ["); idx >= 0 {
+					title = strings.TrimSpace(title[:idx])
+				}
+
 				if task == nil {
 					task = &TrackerTask{
-						ID:        id,
+						ID:        taskID,
 						Title:     title,
 						Type:      taskType,
-						Status:    "open",
-						Priority:  2,
+						Status:    status,
+						Priority:  parsePriority(priority),
 						CreatedAt: time.Now().Format(time.RFC3339),
 						UpdatedAt: time.Now().Format(time.RFC3339),
 					}
 				}
+				continue
+			}
+
+			// Try format without type bracket
+			reWithoutType := regexp.MustCompile(`^[○◐●✓❄]\s+(\S+)\s*·\s*(.+?)\s+\[●\s+(P\d)\s*·\s*(OPEN|IN_PROGRESS|CLOSED|WONTFIX|PARKED)\]$`)
+			matches = reWithoutType.FindStringSubmatch(line)
+			if matches != nil {
+				taskID := matches[1]
+				titleWithPriority := matches[2]
+				priority := matches[3]
+				status := parseStatusFromShow(matches[4])
+
+				// Extract title
+				title := titleWithPriority
+				if idx := strings.LastIndex(title, " ["); idx >= 0 {
+					title = strings.TrimSpace(title[:idx])
+				}
+
+				if task == nil {
+					task = &TrackerTask{
+						ID:        taskID,
+						Title:     title,
+						Type:      "task", // default
+						Status:    status,
+						Priority:  parsePriority(priority),
+						CreatedAt: time.Now().Format(time.RFC3339),
+						UpdatedAt: time.Now().Format(time.RFC3339),
+					}
+				}
+				continue
 			}
 		}
-		if strings.HasPrefix(line, "Owner:") {
-			if task != nil && strings.Contains(line, "Assignee:") {
+
+		// Parse Owner/Assignee line: Owner: Dan · Type: epic  OR  Assignee: Dan · Type: feature
+		if strings.HasPrefix(line, "Owner:") || strings.HasPrefix(line, "Assignee:") {
+			if task != nil {
 				parts := strings.Split(line, "·")
 				for _, part := range parts {
 					part = strings.TrimSpace(part)
-					if strings.HasPrefix(part, "Assignee:") {
-						task.Assignee = strings.TrimSpace(strings.TrimPrefix(part, "Assignee:"))
+					if strings.HasPrefix(part, "Owner:") || strings.HasPrefix(part, "Assignee:") {
+						assignee := strings.TrimSpace(strings.TrimPrefix(part, "Owner:"))
+						assignee = strings.TrimSpace(strings.TrimPrefix(assignee, "Assignee:"))
+						task.Assignee = assignee
+					}
+					if strings.HasPrefix(part, "Type:") {
+						task.Type = strings.TrimSpace(strings.TrimPrefix(part, "Type:"))
 					}
 				}
 			}
+			continue
 		}
-		if strings.HasPrefix(line, "Created:") {
-			parts := strings.Split(line, "·")
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if strings.HasPrefix(part, "Created:") {
-					if t, err := time.Parse("2006-01-02", strings.TrimSpace(strings.TrimPrefix(part, "Created:"))); err == nil {
-						if task != nil {
+
+		// Parse Created/Updated line: Created: 2026-09-07 · Updated: 2026-09-07
+		// Also handles: Created: 2026-10-08 · Started: 2026-10-19 · Updated: 2026-10-19
+		if strings.HasPrefix(line, "Created:") || strings.HasPrefix(line, "Updated:") || strings.HasPrefix(line, "Started:") {
+			if task != nil {
+				parts := strings.Split(line, "·")
+				for _, part := range parts {
+					part = strings.TrimSpace(part)
+					if strings.HasPrefix(part, "Created:") {
+						dateStr := strings.TrimSpace(strings.TrimPrefix(part, "Created:"))
+						if t, err := time.Parse("2006-01-02", dateStr); err == nil {
 							task.CreatedAt = t.Format(time.RFC3339)
 						}
 					}
-				}
-				if strings.HasPrefix(part, "Updated:") {
-					if t, err := time.Parse("2006-01-02", strings.TrimSpace(strings.TrimPrefix(part, "Updated:"))); err == nil {
-						if task != nil {
+					if strings.HasPrefix(part, "Updated:") {
+						dateStr := strings.TrimSpace(strings.TrimPrefix(part, "Updated:"))
+						if t, err := time.Parse("2006-01-02", dateStr); err == nil {
 							task.UpdatedAt = t.Format(time.RFC3339)
 						}
 					}
 				}
 			}
+			continue
 		}
+
+		// Parse Labels line: Labels: label1, label2
 		if strings.HasPrefix(line, "Labels:") {
 			if task != nil {
 				labelsStr := strings.TrimSpace(strings.TrimPrefix(line, "Labels:"))
-				task.Labels = strings.Split(labelsStr, ", ")
+				if labelsStr != "" {
+					task.Labels = strings.Split(labelsStr, ", ")
+				}
 			}
+			continue
 		}
 	}
 
@@ -532,6 +618,23 @@ func parseShow(id, output string) (*TrackerTask, error) {
 		return nil, fmt.Errorf("could not parse bd show output")
 	}
 	return task, nil
+}
+
+func parseStatusFromShow(status string) string {
+	switch status {
+	case "OPEN":
+		return "open"
+	case "IN_PROGRESS":
+		return "in_progress"
+	case "CLOSED":
+		return "closed"
+	case "WONTFIX":
+		return "wontfix"
+	case "PARKED":
+		return "parked"
+	default:
+		return "unknown"
+	}
 }
 
 func parseStatus(status string) string {
