@@ -1,0 +1,30 @@
+# Binaries
+bd-tracker
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build artifacts
+dist/
+build/
+*.tar.gz
+*.zip
+
+# Test output
+*.out
+*.test
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+go.work
