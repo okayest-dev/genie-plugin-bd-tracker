@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 type TrackerTask struct {
 	ID          string   `json:"id"`
 	Title       string   `json:"title"`
@@ -146,7 +152,7 @@ func main() {
 func printManifest() {
 	manifest := map[string]any{
 		"name":         "bd-tracker",
-		"version":      "1.0.0",
+		"version":      version,
 		"description":  "Genie tracker plugin for bd/beads issue tracker",
 		"author":       "Genie Team",
 		"license":      "MIT",
