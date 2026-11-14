@@ -4,15 +4,54 @@ This plugin provides integration with the [bd/beads](https://github.com/okayest-
 
 ## Installation
 
+### Pre-built Binaries (Recommended)
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/genie-plugins/bd-tracker/releases):
+
 ```bash
-# From source
+# Linux (amd64)
+curl -L -o bd-tracker.tar.gz https://github.com/genie-plugins/bd-tracker/releases/latest/download/bd-tracker_linux_amd64.tar.gz
+tar xzf bd-tracker.tar.gz
+sudo mv bd-tracker /usr/local/bin/
+
+# Linux (arm64)
+curl -L -o bd-tracker.tar.gz https://github.com/genie-plugins/bd-tracker/releases/latest/download/bd-tracker_linux_arm64.tar.gz
+tar xzf bd-tracker.tar.gz
+sudo mv bd-tracker /usr/local/bin/
+
+# macOS (Intel)
+curl -L -o bd-tracker.tar.gz https://github.com/genie-plugins/bd-tracker/releases/latest/download/bd-tracker_darwin_amd64.tar.gz
+tar xzf bd-tracker.tar.gz
+sudo mv bd-tracker /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -L -o bd-tracker.tar.gz https://github.com/genie-plugins/bd-tracker/releases/latest/download/bd-tracker_darwin_arm64.tar.gz
+tar xzf bd-tracker.tar.gz
+sudo mv bd-tracker /usr/local/bin/
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://github.com/genie-plugins/bd-tracker/releases/latest/download/bd-tracker_windows_amd64.zip" -OutFile "bd-tracker.zip"
+Expand-Archive -Path "bd-tracker.zip" -DestinationPath "."
+Move-Item -Path "bd-tracker.exe" -Destination "$env:USERPROFILE\bin\"
+```
+
+Then add the binary location to your PATH or place it in your Genie plugins directory.
+
+### From Source
+
+```bash
 git clone https://github.com/genie-plugins/bd-tracker
 cd bd-tracker
 go build -o bd-tracker ./cmd/bd-tracker
 # Copy bd-tracker to your genie plugins directory or add to PATH
 ```
 
-Or install via your package manager when available.
+### Verify Installation
+
+```bash
+bd-tracker --capabilities
+bd-tracker --manifest
+```
 
 ## Configuration
 
